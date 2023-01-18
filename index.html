@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TDG POC DEMO</title>
+    <script src="mqtt.js"></script>
+    <script src="TDGPoCClient.js"></script>
+
+    <link href="./assets/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .bd-placeholder-img {
+            font-size: 1.125rem;
+            text-anchor: middle;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            user-select: none;
+        }
+
+        @media (min-width: 768px) {
+            .bd-placeholder-img-lg {
+                font-size: 3.5rem;
+            }
+        }
+
+    </style>
+    <link href="sidebars.css" rel="stylesheet">
+</head>
+<body>
+
+<nav class="navbar navbar-expand-lg navbar-dark bg-dark">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="#"> TDG POC </a>
+        <div class="collapse navbar-collapse" id="navbarSupportedContent">
+            <form class="d-flex align-items-center">
+
+                <label for="room-id" class="col-form-label me-2 text-white">Room</label>
+                <input class="form-control me-2" type="text" inputmode="numeric" value="1234" id="room-id">
+
+                <label for="user-name" class="col-form-label me-2 text-white">User</label>
+                <input class="form-control me-2" type="text" value="Alice" id="user-name">
+
+                <label for="server-name" class="col-form-label me-2 text-white">Server</label>
+                <select class="form-select me-2" aria-label="svrSelect" id="server-name">
+                    <option value="janus-1" selected>Janus 1</option>
+                    <option value="janus-2">Janus 2</option>
+                    <option value="janus-3">Janus 3</option>
+                </select>
+
+                <label for="transport" class="col-form-label me-2 text-white">Transport</label>
+                <select class="form-select me-2" aria-label="transportSelect" id="transport">
+                    <option value="MQTT" selected>MQTT</option>
+                    <option value="WebSocket">WebSocket</option>
+                </select>
+
+                <div class="form-check form-switch me-2">
+                    <input class="form-check-input" type="checkbox" id="simulcast">
+                    <label class="form-check-label text-white bg-dark" for="simulcast">Simulcast</label>
+                </div>
+
+                <div class="btn-group">
+                    <button class="btn btn-outline-success me-2" type="button" onclick="start()">START</button>
+                    <button class="btn btn-outline-danger me-2" type="button" onclick="stop()">STOP</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</nav>
+
+<div class="container-fluid">
+
+
+    <div class="row">
+    <div class="col-md-3">
+        <video id='localVideo' controls autoplay style="text-align: left">
+            Browser is too old for HTML5 video.
+        </video>
+    </div>
+
+    <div id="remote">
+
+    </div>
+
+    </div>
+</div>
+
+<script>
+
+    let client = null;
+    const feed_video = new Map();
+
+    async function start() {
+
+        let room_id = Number(document.getElementById('room-id').value);
+
+        let user_name = document.getElementById('user-name').value;
+
+        let e = document.getElementById("server-name");
+        let server_name = e.value;
+
+        e = document.getElementById("transport");
+        let ws_chosen = e.value === "WebSocket";
+
+        let simulcast_checked = document.getElementById('simulcast').checked;
+        let current_state = "new";
+
+        let conf = new TDGPoCClient.Configuration({
+            server: {
+                url: 'ws://203.144.245.161:8083/mqtt',
+                name: server_name
+            },
+            iceServers: [{
+                urls: 'stun:stun2.l.google.com:19302'
+            }],
+            network: {
+                audio_send: true,
+                aduio_recv: true,
+                video_send: true,
+                video_recv: true
+            },
+            video_encode: {
+                simulcast: false
+            }
+        });
+
+        if (ws_chosen) {
+            if(server_name === 'janus-1') {
+                conf.setServerUrl('ws://203.144.245.159:8188');
+            } else if(server_name === 'janus-2') {
+                conf.setServerUrl('ws://203.144.245.160:8188');
+            } else {
+                conf.setServerUrl('ws://203.144.245.161:8188');
+            }
+        }
+
+        if (simulcast_checked) {
+            conf.setVideoEncodingSimulcast(true);
+        }
+
+        client = new TDGPoCClient.Client(conf);
+
+        client.on(TDGPoCClient.Events.WEBRTC_NOT_SUPPORTED, (e) => {
+            console.log(e);
+        });
+
+        client.on(TDGPoCClient.Events.WEBRTC_CAPTURE_FAILED, (e) => {
+            console.log(e);
+        })
+
+        client.on(TDGPoCClient.Events.SESSION_STATE_CHANGED, ({id, state, reason}) => {
+            current_state = state;
+            if (typeof reason !== 'undefined') {
+                console.log(`[session ${id}] enter new state "${state}" reason "${reason}"`);
+            } else {
+                console.log(`[session ${id}] enter new state "${state}"`);
+            }
+        })
+
+        client.on(TDGPoCClient.Events.WEBRTC_UP, ({id}) => {
+            console.log(`[handle ${id}] webrtc is up`);
+        })
+
+        client.on(TDGPoCClient.Events.WEBRTC_DOWN, ({id, reason}) => {
+            console.log(`[handle ${id}] webrtc is down, reason: ${reason}`);
+        })
+
+        client.on(TDGPoCClient.Events.MEDIA_LOCAL_STREAM, (stream) => {
+            document.getElementById('localVideo').srcObject = stream;
+            document.getElementById('localVideo').muted = true;
+        });
+
+        client.on(TDGPoCClient.Events.MEDIA_REMOTE_STREAM, ({feed, stream}) => {
+
+            if (stream) {
+                console.log(`add video stream from: ${feed}`);
+                // add stream
+                const video = document.createElement('video');
+                video.srcObject = stream;
+                video.controls = true;
+                video.autoplay = true;
+                video.width = 320;
+                video.height = 240;
+
+                const remote = document.getElementById("remote");
+
+                const video_element = remote.appendChild(video);
+
+                feed_video.set(feed, video_element);
+            } else {
+                console.log(`remove video stream from: ${feed}`);
+                // remove stream
+                const video_element = feed_video.get(feed);
+                if (video_element) {
+                    feed_video.delete(feed);
+                    const remote = document.getElementById("remote");
+                    remote.removeChild(video_element);
+                }
+            }
+        })
+
+        client.on(TDGPoCClient.Events.MEDIA_REMOTE_FEEDS_ADDED, (feeds) => {
+            console.log(feeds);
+            client.subscribe(feeds);
+        });
+
+        await client.openSession();
+
+        await client.joinRoom(room_id, user_name);
+
+
+        const audioConstraints = new TDGPoCClient.AudioConstraints(TDGPoCClient.AudioSource.MIC);
+        const videoConstraints = new TDGPoCClient.VideoConstraints(TDGPoCClient.VideoSource.CAMERA, 640, 480, 24);
+        const mediaConstraints = new TDGPoCClient.MediaConstraints(audioConstraints, videoConstraints);
+
+        await client.openLocalMediaStream(mediaConstraints);
+
+        await client.publish();
+    }
+
+    async function stop() {
+        clearRemoteFeed();
+
+        await client.unpublish();
+
+        await client.closeLocalMediaStream();
+
+        await client.leaveRoom();
+
+        await client.closeSession();
+    }
+
+    function clearRemoteFeed() {
+        feed_video.forEach((feed) => {
+            const remote = document.getElementById("remote");
+            remote.removeChild(feed);
+        });
+
+        feed_video.clear();
+    }
+
+</script>
+
+<script src="./assets/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
